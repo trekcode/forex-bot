@@ -3,13 +3,105 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from datetime import datetime
+import time
+import json
 
 st.set_page_config(page_title="Forex Analyzer", layout="wide")
 
-st.title("📊 Forex & Indices Market Analyzer")
-st.write("Real-time trading signals (Educational Only)")
+# Custom CSS for notifications
+st.markdown("""
+<style>
+.notification {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 9999;
+    padding: 15px 20px;
+    border-radius: 10px;
+    animation: slideIn 0.5s ease-out;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+.buy-notification {
+    background: linear-gradient(135deg, #1a472a 0%, #0e2a1a 100%);
+    border-left: 5px solid #00ff00;
+    color: white;
+}
+.sell-notification {
+    background: linear-gradient(135deg, #471a1a 0%, #2a0e0e 100%);
+    border-left: 5px solid #ff4444;
+    color: white;
+}
+.neutral-notification {
+    background: linear-gradient(135deg, #2a2a2a 0%, #1a1a1a 100%);
+    border-left: 5px solid #ffaa00;
+    color: white;
+}
+.notification-close {
+    float: right;
+    cursor: pointer;
+    margin-left: 15px;
+    color: #888;
+}
+.notification-close:hover {
+    color: white;
+}
+</style>
+""", unsafe_allow_html=True)
 
-st.write(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.title("📊 Forex & Indices Market Analyzer")
+st.write("Real-time trading signals with live notifications (Educational Only)")
+
+# Initialize session state for notifications
+if 'previous_signals' not in st.session_state:
+    st.session_state.previous_signals = {}
+if 'notifications' not in st.session_state:
+    st.session_state.notifications = []
+if 'auto_refresh' not in st.session_state:
+    st.session_state.auto_refresh = False
+if 'last_update' not in st.session_state:
+    st.session_state.last_update = datetime.now()
+
+# Sidebar controls
+with st.sidebar:
+    st.header("⚙️ Settings")
+    
+    # Auto-refresh toggle
+    st.session_state.auto_refresh = st.checkbox("🔄 Auto-refresh (every 60 seconds)", 
+                                                 value=st.session_state.auto_refresh)
+    
+    # Notification settings
+    st.subheader("🔔 Notification Settings")
+    notify_buy = st.checkbox("🔔 Notify on BUY signals", value=True)
+    notify_sell = st.checkbox("🔔 Notify on SELL signals", value=True)
+    notify_neutral = st.checkbox("🔔 Notify on SIGNAL CHANGES", value=True)
+    
+    min_confidence_notify = st.slider("Minimum confidence for notifications", 50, 90, 65)
+    
+    # Sound alerts
+    sound_alerts = st.checkbox("🔊 Play sound on new signals", value=False)
+    
+    # Manual refresh button
+    if st.button("🔄 Refresh Now", use_container_width=True):
+        st.rerun()
+    
+    st.markdown("---")
+    st.info("📊 Signals update every minute when auto-refresh is enabled")
+
+# Display current time
+current_time = datetime.now()
+st.write(f"⏰ Last update: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+if st.session_state.auto_refresh:
+    st.info("🔄 Auto-refresh enabled - Page updates every 60 seconds")
 
 # Define all instruments
 pairs = {
@@ -191,14 +283,120 @@ with st.spinner("Analyzing markets..."):
         if result:
             results.append(result)
 
+# Check for signal changes and create notifications
+new_notifications = []
+
+for r in results:
+    symbol_key = r['symbol']
+    current_signal = r['action']
+    current_confidence = r['confidence']
+    
+    if symbol_key in st.session_state.previous_signals:
+        prev_signal = st.session_state.previous_signals[symbol_key]['action']
+        prev_confidence = st.session_state.previous_signals[symbol_key]['confidence']
+        
+        # Check if signal changed
+        if prev_signal != current_signal:
+            if current_signal == 'BUY' and notify_buy:
+                notification = {
+                    'type': 'buy',
+                    'message': f"🟢 BUY SIGNAL for {r['name']}! Confidence: {current_confidence}%",
+                    'instrument': r['name'],
+                    'price': r['price_str'],
+                    'stop_loss': r['stop_loss'],
+                    'take_profit': r['take_profit']
+                }
+                new_notifications.append(notification)
+            elif current_signal == 'SELL' and notify_sell:
+                notification = {
+                    'type': 'sell',
+                    'message': f"🔴 SELL SIGNAL for {r['name']}! Confidence: {current_confidence}%",
+                    'instrument': r['name'],
+                    'price': r['price_str'],
+                    'stop_loss': r['stop_loss'],
+                    'take_profit': r['take_profit']
+                }
+                new_notifications.append(notification)
+            elif notify_neutral:
+                notification = {
+                    'type': 'neutral',
+                    'message': f"⚖️ Signal changed to NEUTRAL for {r['name']}",
+                    'instrument': r['name'],
+                    'price': r['price_str']
+                }
+                new_notifications.append(notification)
+        
+        # Check for confidence increase
+        elif current_signal != 'NEUTRAL' and current_confidence > prev_confidence + 10:
+            notification = {
+                'type': 'buy' if current_signal == 'BUY' else 'sell',
+                'message': f"📈 SIGNAL STRENGTHENED for {r['name']}! Confidence: {prev_confidence}% → {current_confidence}%",
+                'instrument': r['name'],
+                'price': r['price_str']
+            }
+            new_notifications.append(notification)
+    
+    # Store current signal for next comparison
+    st.session_state.previous_signals[symbol_key] = {
+        'action': current_signal,
+        'confidence': current_confidence
+    }
+
+# Add new notifications to session state
+if new_notifications:
+    st.session_state.notifications = new_notifications + st.session_state.notifications
+    # Keep only last 20 notifications
+    st.session_state.notifications = st.session_state.notifications[:20]
+
+# Display notifications using HTML/JS
+if st.session_state.notifications:
+    notification_html = ""
+    for i, notif in enumerate(st.session_state.notifications[:5]):  # Show only last 5
+        if notif['type'] == 'buy':
+            notif_class = "buy-notification"
+            sound = "🔔" if sound_alerts else ""
+        elif notif['type'] == 'sell':
+            notif_class = "sell-notification"
+            sound = "🔔" if sound_alerts else ""
+        else:
+            notif_class = "neutral-notification"
+            sound = ""
+        
+        notification_html += f"""
+        <div class="notification {notif_class}" id="notif_{i}">
+            {sound} <strong>{notif['message']}</strong><br>
+            <small>Price: {notif.get('price', 'N/A')}</small>
+            <span class="notification-close" onclick="document.getElementById('notif_{i}').remove()">✕</span>
+        </div>
+        """
+    
+    # JavaScript to auto-remove notifications after 10 seconds
+    st.markdown(f"""
+    <div id="notification-container">
+        {notification_html}
+    </div>
+    <script>
+        // Auto-remove notifications after 10 seconds
+        setTimeout(function() {{
+            var notifications = document.querySelectorAll('.notification');
+            notifications.forEach(function(notif) {{
+                notif.remove();
+            }});
+        }}, 10000);
+        
+        // Play sound for new signals
+        {"new Audio('https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3').play();" if sound_alerts and new_notifications else ""}
+    </script>
+    """, unsafe_allow_html=True)
+
 # ============================================
-# TABLE 1: TRADE SIGNALS - WHAT TO BUY/SELL
+# DISPLAY TRADE SIGNALS TABLE
 # ============================================
 st.markdown("## 🎯 TRADE SIGNALS")
 st.markdown("### What to Buy / Sell Now")
 
 # Filter actionable signals
-actionable_signals = [r for r in results if r['action'] != 'NEUTRAL']
+actionable_signals = [r for r in results if r['action'] != 'NEUTRAL' and r['confidence'] >= min_confidence_notify]
 
 if actionable_signals:
     # Create trade signals dataframe
@@ -219,7 +417,7 @@ if actionable_signals:
         for r in actionable_signals
     ])
     
-    # Display signals table
+    # Display signals table with highlighting
     st.dataframe(
         trade_df,
         use_container_width=True,
@@ -239,10 +437,10 @@ if actionable_signals:
         }
     )
 else:
-    st.info("⚖️ No strong trade signals at this time. Market is ranging or neutral.")
+    st.info(f"⚖️ No trade signals above {min_confidence_notify}% confidence at this time.")
 
 # ============================================
-# TABLE 2: MARKET OVERVIEW - ALL INSTRUMENTS
+# MARKET OVERVIEW TABLE
 # ============================================
 st.markdown("## 📊 MARKET OVERVIEW")
 st.markdown("### All Instruments Analysis")
@@ -265,40 +463,16 @@ overview_df = pd.DataFrame([
     for r in results
 ])
 
-# Color code the signal column
-def color_signal(val):
-    if '🟢' in val:
-        return 'background-color: #1a472a; color: #00ff00'
-    elif '🔴' in val:
-        return 'background-color: #471a1a; color: #ff4444'
-    else:
-        return 'background-color: #2a2a2a; color: #ffff00'
-
-# Display overview table with styling
 st.dataframe(
     overview_df,
     use_container_width=True,
-    hide_index=True,
-    column_config={
-        "Instrument": st.column_config.TextColumn(width="medium"),
-        "Type": st.column_config.TextColumn(width="small"),
-        "Price": st.column_config.TextColumn(width="small"),
-        "Change %": st.column_config.TextColumn(width="small"),
-        "Signal": st.column_config.TextColumn(width="small"),
-        "Confidence": st.column_config.TextColumn(width="small"),
-        "RSI": st.column_config.TextColumn(width="small"),
-        "SMA20": st.column_config.TextColumn(width="medium"),
-        "SMA50": st.column_config.TextColumn(width="medium"),
-        "MACD": st.column_config.TextColumn(width="small"),
-        "Volatility": st.column_config.TextColumn(width="small"),
-    }
+    hide_index=True
 )
 
 # ============================================
-# DETAILED ANALYSIS FOR EACH INSTRUMENT
+# DETAILED ANALYSIS
 # ============================================
 st.markdown("## 📈 DETAILED ANALYSIS")
-st.markdown("### Individual Instrument Breakdown")
 
 # Create tabs for different instrument types
 tab1, tab2, tab3 = st.tabs(["💰 Forex Pairs", "📊 Indices", "🥇 Commodities"])
@@ -393,12 +567,8 @@ with tab3:
                     st.metric("ATR Volatility", f"{r['atr_percent']:.2f}%")
                 
                 with col2:
-                    if r['type'] == 'Commodity':
-                        st.metric("SMA 20", f"{r['sma20']:.2f}")
-                        st.metric("SMA 50", f"{r['sma50']:.2f}")
-                    else:
-                        st.metric("SMA 20", f"{r['sma20']:.3f}")
-                        st.metric("SMA 50", f"{r['sma50']:.3f}")
+                    st.metric("SMA 20", f"{r['sma20']:.2f}")
+                    st.metric("SMA 50", f"{r['sma50']:.2f}")
                     st.metric("MACD Histogram", f"{r['macd_histogram']:.4f}")
                 
                 with col3:
@@ -425,7 +595,7 @@ with tab3:
 # ============================================
 st.markdown("## 📊 SUMMARY STATISTICS")
 
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3, col4, col5 = st.columns(5)
 
 with col1:
     buy_signals = len([r for r in results if r['action'] == 'BUY'])
@@ -443,6 +613,27 @@ with col4:
     avg_confidence = sum(r['confidence'] for r in results if r['confidence'] > 0) / len([r for r in results if r['confidence'] > 0]) if [r for r in results if r['confidence'] > 0] else 0
     st.metric("Avg Confidence", f"{avg_confidence:.0f}%")
 
+with col5:
+    if st.session_state.auto_refresh:
+        st.metric("Auto-Refresh", "ON", delta="60s")
+    else:
+        st.metric("Auto-Refresh", "OFF")
+
+# Recent notifications log
+if st.session_state.notifications:
+    with st.expander("📋 Recent Notifications Log"):
+        for notif in st.session_state.notifications[:10]:
+            st.write(f"• {notif['message']}")
+
+# ============================================
+# AUTO-REFRESH LOGIC
+# ============================================
+if st.session_state.auto_refresh:
+    st.markdown("---")
+    st.info("🔄 Auto-refresh enabled - Page will reload in 60 seconds...")
+    time.sleep(60)
+    st.rerun()
+
 # ============================================
 # FOOTER
 # ============================================
@@ -451,10 +642,7 @@ st.markdown("""
 <div style='text-align: center; color: gray;'>
     <p>⚠️ <b>Educational purposes only</b> - Not financial advice</p>
     <p>📊 Signals based on: RSI, MACD, Moving Averages, and Volatility (ATR)</p>
-    <p>🔄 Data updates on page refresh | Click refresh button below for latest data</p>
+    <p>🔔 Notifications appear when signals change or confidence increases</p>
+    <p>🔄 Enable auto-refresh in sidebar for live updates</p>
 </div>
 """, unsafe_allow_html=True)
-
-# Refresh button
-if st.button("🔄 Refresh Data", use_container_width=True):
-    st.rerun()
