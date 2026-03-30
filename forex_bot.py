@@ -16,8 +16,7 @@ pairs = {
     'GBPUSD=X': 'GBP/USD',
     'USDJPY=X': 'USD/JPY',
     'AUDUSD=X': 'AUD/USD',
-    'USDCAD=X': 'USD/CAD',
-    'XAUUSD=X:  'XAU/USD'
+    'USDCAD=X': 'USD/CAD'
 }
 
 for symbol, name in pairs.items():
