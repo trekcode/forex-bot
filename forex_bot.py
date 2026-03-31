@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import json
 import requests
@@ -12,13 +12,13 @@ st.set_page_config(page_title="Forex Analyzer", layout="wide")
 # ============================================
 # TELEGRAM NOTIFICATION CONFIGURATION
 # ============================================
-# Main Bot (All Instruments)
-MAIN_BOT_TOKEN = "8773664334:AAE4fd4Wpyd2ZQkWBsjlPby7qSGKp00jGng"
-MAIN_BOT_CHAT_ID = "2057396237"
+# Your Telegram credentials
+TELEGRAM_TOKEN = "8773664334:AAE4fd4Wpyd2ZQkWBsjlPby7qSGKp00jGng"
+TELEGRAM_CHAT_ID = "2057396237"
 
-# Gold-Only Bot (Dedicated Bot for Gold)
+# Gold-Only Bot (Optional - separate bot for gold)
 GOLD_BOT_TOKEN = "8686418191:AAHtEBJ9Lyehb3geZS1WwWukmYZatqpAe-A"
-GOLD_BOT_CHAT_ID = "2057396237"  # Same chat ID or different if you want separate
+GOLD_BOT_CHAT_ID = "2057396237"
 
 def send_telegram_message(token, chat_id, message, parse_mode='HTML'):
     """Send message to Telegram using specified bot"""
@@ -27,77 +27,157 @@ def send_telegram_message(token, chat_id, message, parse_mode='HTML'):
         payload = {
             'chat_id': chat_id,
             'text': message,
-            'parse_mode': parse_mode
+            'parse_mode': parse_mode,
+            'disable_web_page_preview': True
         }
         response = requests.post(url, json=payload, timeout=10)
         return response.status_code == 200
     except Exception as e:
-        st.error(f"Telegram error: {e}")
+        print(f"Telegram error: {e}")
         return False
 
-def send_main_bot_signal(instrument, signal, price, confidence, stop_loss, take_profit, rsi):
-    """Send formatted trade signal to MAIN Telegram bot"""
+def send_consolidated_signal(results, min_confidence):
+    """Send ONE consolidated message with all strong signals"""
     
-    if signal == "BUY":
-        emoji = "🟢"
-        action = "BUY"
-    elif signal == "SELL":
-        emoji = "🔴"
-        action = "SELL"
+    # Filter strong signals
+    strong_signals = [r for r in results if r['action'] != 'NEUTRAL' and r['confidence'] >= min_confidence]
+    
+    if not strong_signals:
+        return False
+    
+    # Get market session
+    current_hour = datetime.now().hour
+    if 8 <= current_hour < 16:
+        session = "🇬🇧 London Session"
+        session_emoji = "🏛️"
+    elif 13 <= current_hour < 22:
+        session = "🇺🇸 New York Session"
+        session_emoji = "🗽"
     else:
-        return False
+        session = "🌏 Asian Session"
+        session_emoji = "🌏"
     
+    # Build consolidated message
     message = f"""
-<b>{emoji} {action} SIGNAL!</b>
+<b>📊 DAILY FOREX SIGNAL REPORT</b>
+{session_emoji} {session} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC
+{'='*40}
 
-<b>📊 Instrument:</b> {instrument}
-<b>💰 Price:</b> {price}
-<b>🎯 Confidence:</b> {confidence}%
-<b>📈 RSI:</b> {rsi:.1f}
+<b>🎯 STRONG TRADE SIGNALS FOUND: {len(strong_signals)}</b>
 
-<b>📋 Trade Plan:</b>
-• <b>Entry:</b> {price}
-• <b>Stop Loss:</b> {stop_loss}
-• <b>Take Profit:</b> {take_profit}
-
-<b>⏰ Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-<i>⚠️ Educational purposes only</i>
-    """.strip()
+"""
     
-    return send_telegram_message(MAIN_BOT_TOKEN, MAIN_BOT_CHAT_ID, message)
-
-def send_gold_bot_signal(instrument, signal, price, confidence, stop_loss, take_profit, rsi):
-    """Send formatted trade signal to GOLD-ONLY Telegram bot"""
+    # Add each signal
+    for i, r in enumerate(strong_signals, 1):
+        if r['action'] == 'BUY':
+            emoji = "🟢"
+            action = "BUY"
+            border = "🟢"
+        else:
+            emoji = "🔴"
+            action = "SELL"
+            border = "🔴"
+        
+        # Format price based on instrument type
+        if r['type'] == 'Forex':
+            price_display = r['price_str']
+            sl_display = f"{r['stop_loss']:.5f}"
+            tp_display = f"{r['take_profit']:.5f}"
+        else:
+            price_display = r['price_str']
+            sl_display = f"{r['stop_loss']:.2f}"
+            tp_display = f"{r['take_profit']:.2f}"
+        
+        message += f"""
+{emoji} <b>#{i} {action} {r['name']}</b>
+   └─ 💰 Price: {price_display}
+   └─ 🎯 Confidence: {r['confidence']}%
+   └─ 📊 RSI: {r['rsi']:.1f}
+   └─ 🛑 Stop Loss: {sl_display}
+   └─ 🎯 Take Profit: {tp_display}
+   └─ 📈 Risk/Reward: 1:{r['risk_reward']}
+"""
     
-    if signal == "BUY":
-        emoji = "🟢"
-        action = "BUY"
-    elif signal == "SELL":
-        emoji = "🔴"
-        action = "SELL"
+    # Add trading tips
+    message += f"""
+{'='*40}
+<b>📝 QUICK TRADING TIPS:</b>
+• Risk 1-2% per trade
+• Wait for confirmation candle
+• Use proper position sizing
+• Set alerts at key levels
+
+<i>⚠️ Educational purposes only - Manage risk!</i>
+"""
+    
+    # Send to main bot
+    success1 = send_telegram_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, message)
+    
+    # Also send gold signals to gold bot if any
+    gold_signals = [r for r in strong_signals if 'Gold' in r['name']]
+    if gold_signals and GOLD_BOT_TOKEN:
+        gold_message = f"""
+<b>🥇 GOLD DAILY SIGNAL REPORT</b>
+{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC
+{'='*30}
+
+<b>🎯 GOLD SIGNALS: {len(gold_signals)}</b>
+"""
+        for i, r in enumerate(gold_signals, 1):
+            if r['action'] == 'BUY':
+                emoji = "🟢"
+            else:
+                emoji = "🔴"
+            
+            gold_message += f"""
+{emoji} <b>#{i} {r['action']} {r['name']}</b>
+   └─ 💰 Price: {r['price_str']}
+   └─ 🎯 Confidence: {r['confidence']}%
+   └─ 📊 RSI: {r['rsi']:.1f}
+   └─ 🛑 Stop: {r['stop_loss']:.2f}
+   └─ 🎯 Target: {r['take_profit']:.2f}
+"""
+        
+        gold_message += "\n<i>⚠️ Educational purposes only</i>"
+        send_telegram_message(GOLD_BOT_TOKEN, GOLD_BOT_CHAT_ID, gold_message)
+    
+    return success1
+
+def send_daily_summary(results):
+    """Send daily summary at end of day"""
+    total_signals = len([r for r in results if r['action'] != 'NEUTRAL'])
+    buy_signals = len([r for r in results if r['action'] == 'BUY'])
+    sell_signals = len([r for r in results if r['action'] == 'SELL'])
+    
+    summary = f"""
+<b>📅 DAILY TRADING SUMMARY</b>
+📊 Date: {datetime.now().strftime('%Y-%m-%d')}
+{'='*30}
+
+<b>📈 Signal Statistics:</b>
+• Total Signals: {total_signals}
+• 🟢 BUY Signals: {buy_signals}
+• 🔴 SELL Signals: {sell_signals}
+• ⚖️ Neutral: {len(results) - total_signals}
+
+<b>🎯 Best Signal:</b>
+"""
+    
+    # Find best signal
+    best = max([r for r in results if r['action'] != 'NEUTRAL'], key=lambda x: x['confidence']) if total_signals > 0 else None
+    if best:
+        summary += f"""
+• Instrument: {best['name']}
+• Action: {best['action']}
+• Confidence: {best['confidence']}%
+• Risk/Reward: 1:{best['risk_reward']}
+"""
     else:
-        return False
+        summary += "• No strong signals today\n"
     
-    message = f"""
-<b>{emoji} {action} SIGNAL - GOLD!</b>
-
-<b>🥇 Instrument:</b> {instrument}
-<b>💰 Price:</b> {price}
-<b>🎯 Confidence:</b> {confidence}%
-<b>📈 RSI:</b> {rsi:.1f}
-
-<b>📋 Trade Plan:</b>
-• <b>Entry:</b> {price}
-• <b>Stop Loss:</b> {stop_loss}
-• <b>Take Profit:</b> {take_profit}
-
-<b>⏰ Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-<i>⚠️ Educational purposes only</i>
-    """.strip()
+    summary += "\n<i>⚠️ Educational purposes only</i>"
     
-    return send_telegram_message(GOLD_BOT_TOKEN, GOLD_BOT_CHAT_ID, message)
+    return summary
 
 # Custom CSS for notifications
 st.markdown("""
@@ -150,7 +230,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("📊 Forex & Indices Market Analyzer")
-st.write("Real-time trading signals with Dual Telegram Bots (Main + Gold-Only)")
+st.write("Daily consolidated trading signals with Telegram notifications (Educational Only)")
 
 # Initialize session state
 if 'previous_signals' not in st.session_state:
@@ -161,10 +241,10 @@ if 'auto_refresh' not in st.session_state:
     st.session_state.auto_refresh = False
 if 'last_update' not in st.session_state:
     st.session_state.last_update = datetime.now()
-if 'main_bot_sent' not in st.session_state:
-    st.session_state.main_bot_sent = set()  # Track sent signals for main bot
-if 'gold_bot_sent' not in st.session_state:
-    st.session_state.gold_bot_sent = set()  # Track sent signals for gold bot
+if 'last_signal_sent' not in st.session_state:
+    st.session_state.last_signal_sent = None
+if 'last_daily_summary' not in st.session_state:
+    st.session_state.last_daily_summary = None
 
 # Sidebar controls
 with st.sidebar:
@@ -174,54 +254,46 @@ with st.sidebar:
     st.session_state.auto_refresh = st.checkbox("🔄 Auto-refresh (every 60 seconds)", 
                                                  value=st.session_state.auto_refresh)
     
-    # Telegram Bots Status
-    st.subheader("🤖 Telegram Bots")
+    # Telegram settings
+    st.subheader("📱 Telegram Notifications")
+    st.info(f"Main Bot: @{TELEGRAM_TOKEN.split(':')[0]}")
     
-    # Main Bot Status
-    st.markdown("**📱 Main Bot (All Instruments)**")
-    st.caption(f"Token: {MAIN_BOT_TOKEN[:15]}...")
-    if st.button("📨 Test Main Bot", key="test_main", use_container_width=True):
-        test_msg = f"✅ <b>Main Forex Bot is Online!</b>\n\n⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n📊 Monitoring all {len(pairs)} instruments"
-        if send_telegram_message(MAIN_BOT_TOKEN, MAIN_BOT_CHAT_ID, test_msg):
-            st.success("✅ Main bot test message sent!")
+    # Test Telegram button
+    if st.button("📨 Send Test Consolidated Message", use_container_width=True):
+        test_msg = f"""
+<b>✅ Forex Bot is Online!</b>
+
+📊 <b>System Status:</b>
+• Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+• Monitoring: {len(pairs)} instruments
+• Mode: Consolidated Daily Signals
+
+<i>You will receive ONE daily message with all strong signals</i>
+        """
+        if send_telegram_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, test_msg):
+            st.success("✅ Test message sent! Check your Telegram!")
         else:
-            st.error("❌ Failed to send. Check token.")
-    
-    st.markdown("---")
-    
-    # Gold Bot Status
-    st.markdown("**🥇 Gold-Only Bot**")
-    st.caption(f"Token: {GOLD_BOT_TOKEN[:15]}...")
-    if st.button("📨 Test Gold Bot", key="test_gold", use_container_width=True):
-        test_msg = f"✅ <b>Gold-Only Forex Bot is Online!</b>\n\n⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n🥇 Monitoring Gold (XAU/USD) only\n\nYou will receive ONLY Gold signals here!"
-        if send_telegram_message(GOLD_BOT_TOKEN, GOLD_BOT_CHAT_ID, test_msg):
-            st.success("✅ Gold bot test message sent!")
-        else:
-            st.error("❌ Failed to send. Check token.")
+            st.error("❌ Failed to send. Check your token and chat ID.")
     
     st.markdown("---")
     
     # Notification settings
     st.subheader("🔔 Signal Settings")
-    notify_buy = st.checkbox("🔔 Notify on BUY signals", value=True)
-    notify_sell = st.checkbox("🔔 Notify on SELL signals", value=True)
-    notify_signal_change = st.checkbox("🔔 Notify on SIGNAL CHANGES", value=True)
+    min_confidence_notify = st.slider("Minimum confidence for signals", 50, 90, 65)
+    send_consolidated = st.checkbox("📦 Send ONE consolidated signal message", value=True)
+    send_end_of_day = st.checkbox("📅 Send End-of-Day Summary", value=True)
     
-    min_confidence_notify = st.slider("Minimum confidence for notifications", 50, 90, 65)
-    
-    # Gold-specific settings
-    st.subheader("🥇 Gold Bot Settings")
-    gold_only_notifications = st.checkbox("📱 Send Gold signals to Gold Bot", value=True)
-    
-    # Sound alerts
-    sound_alerts = st.checkbox("🔊 Play sound on new signals", value=False)
+    # Signal frequency
+    st.subheader("⏰ Signal Frequency")
+    signal_mode = st.radio("When to send signals:", 
+                          ["Daily (Once per day)", "Every 4 hours", "On every signal change"])
     
     # Manual refresh button
     if st.button("🔄 Refresh Now", use_container_width=True):
         st.rerun()
     
     st.markdown("---")
-    st.info("📊 Signals update every minute when auto-refresh is enabled")
+    st.info("📊 Signals are consolidated into one daily message for day trading")
 
 # Display current time
 current_time = datetime.now()
@@ -409,87 +481,55 @@ with st.spinner("Analyzing markets..."):
         if result:
             results.append(result)
 
-# Check for signal changes and send Telegram notifications to BOTH bots
+# Check for signal changes and send consolidated messages
+current_hour = datetime.now().hour
+current_day = datetime.now().strftime('%Y-%m-%d')
+
+# Determine if we should send signals based on frequency
+should_send = False
+
+if signal_mode == "Daily (Once per day)":
+    # Send once per day at 8:00 AM and 2:00 PM (key trading times)
+    if current_hour in [8, 14] and st.session_state.last_signal_sent != current_day + str(current_hour):
+        should_send = True
+        st.session_state.last_signal_sent = current_day + str(current_hour)
+        
+elif signal_mode == "Every 4 hours":
+    # Send at 0, 4, 8, 12, 16, 20 hours
+    if current_hour % 4 == 0 and st.session_state.last_signal_sent != current_day + str(current_hour):
+        should_send = True
+        st.session_state.last_signal_sent = current_day + str(current_hour)
+        
+else:  # On every signal change
+    # Check if any signal changed
+    for r in results:
+        prev = st.session_state.previous_signals.get(r['symbol'], {})
+        if prev.get('action') != r['action'] and r['action'] != 'NEUTRAL':
+            should_send = True
+            break
+
+# Send consolidated message if needed
+if should_send and send_consolidated:
+    send_consolidated_signal(results, min_confidence_notify)
+    st.success("📱 Consolidated signal report sent to Telegram!")
+
+# Send end-of-day summary
+if send_end_of_day and current_hour == 21 and st.session_state.last_daily_summary != current_day:
+    summary = send_daily_summary(results)
+    send_telegram_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, summary)
+    st.session_state.last_daily_summary = current_day
+    st.info("📅 End-of-day summary sent to Telegram!")
+
+# Update previous signals
 for r in results:
-    if r['action'] != 'NEUTRAL' and r['confidence'] >= min_confidence_notify:
-        # Create unique keys
-        signal_key = f"{r['symbol']}_{r['action']}_{r['confidence']}"
-        
-        # ========== SEND TO MAIN BOT (All Instruments) ==========
-        if signal_key not in st.session_state.main_bot_sent:
-            prev = st.session_state.previous_signals.get(r['symbol'], {})
-            if prev.get('action') != r['action']:
-                if r['action'] == 'BUY' and notify_buy:
-                    send_main_bot_signal(
-                        r['name'],
-                        r['action'],
-                        r['price_str'],
-                        r['confidence'],
-                        f"{r['stop_loss']:.5f}",
-                        f"{r['take_profit']:.5f}",
-                        r['rsi']
-                    )
-                    st.session_state.main_bot_sent.add(signal_key)
-                    
-                elif r['action'] == 'SELL' and notify_sell:
-                    send_main_bot_signal(
-                        r['name'],
-                        r['action'],
-                        r['price_str'],
-                        r['confidence'],
-                        f"{r['stop_loss']:.5f}",
-                        f"{r['take_profit']:.5f}",
-                        r['rsi']
-                    )
-                    st.session_state.main_bot_sent.add(signal_key)
-        
-        # ========== SEND TO GOLD BOT (Only Gold) ==========
-        # Check if this is Gold
-        is_gold = 'Gold' in r['name'] or 'GC=F' in r['symbol']
-        
-        if is_gold and gold_only_notifications:
-            gold_key = f"GOLD_{r['action']}_{r['confidence']}_{int(datetime.now().timestamp() / 3600)}"
-            
-            if gold_key not in st.session_state.gold_bot_sent:
-                prev = st.session_state.previous_signals.get(r['symbol'], {})
-                if prev.get('action') != r['action']:
-                    if r['action'] == 'BUY' and notify_buy:
-                        send_gold_bot_signal(
-                            r['name'],
-                            r['action'],
-                            r['price_str'],
-                            r['confidence'],
-                            f"{r['stop_loss']:.5f}",
-                            f"{r['take_profit']:.5f}",
-                            r['rsi']
-                        )
-                        st.session_state.gold_bot_sent.add(gold_key)
-                        st.success(f"🥇 Gold signal sent to Gold Bot!")
-                        
-                    elif r['action'] == 'SELL' and notify_sell:
-                        send_gold_bot_signal(
-                            r['name'],
-                            r['action'],
-                            r['price_str'],
-                            r['confidence'],
-                            f"{r['stop_loss']:.5f}",
-                            f"{r['take_profit']:.5f}",
-                            r['rsi']
-                        )
-                        st.session_state.gold_bot_sent.add(gold_key)
-                        st.success(f"🥇 Gold signal sent to Gold Bot!")
-    
-    # Update previous signals
     st.session_state.previous_signals[r['symbol']] = {
         'action': r['action'],
         'confidence': r['confidence']
     }
 
-# Clean old sent signals (keep last 200)
-if len(st.session_state.main_bot_sent) > 200:
-    st.session_state.main_bot_sent = set(list(st.session_state.main_bot_sent)[-200:])
-if len(st.session_state.gold_bot_sent) > 200:
-    st.session_state.gold_bot_sent = set(list(st.session_state.gold_bot_sent)[-200:])
+# Clean old sent signals
+if len(st.session_state.previous_signals) > 200:
+    st.session_state.previous_signals = dict(list(st.session_state.previous_signals.items())[-200:])
 
 # Check for signal changes and create on-screen notifications
 new_notifications = []
@@ -504,8 +544,8 @@ for r in results:
         prev_confidence = st.session_state.previous_signals[symbol_key]['confidence']
         
         # Check if signal changed
-        if prev_signal != current_signal:
-            if current_signal == 'BUY' and notify_buy:
+        if prev_signal != current_signal and current_signal != 'NEUTRAL':
+            if current_signal == 'BUY':
                 notification = {
                     'type': 'buy',
                     'message': f"🟢 BUY SIGNAL for {r['name']}! Confidence: {current_confidence}%",
@@ -515,7 +555,7 @@ for r in results:
                     'take_profit': r['take_profit']
                 }
                 new_notifications.append(notification)
-            elif current_signal == 'SELL' and notify_sell:
+            elif current_signal == 'SELL':
                 notification = {
                     'type': 'sell',
                     'message': f"🔴 SELL SIGNAL for {r['name']}! Confidence: {current_confidence}%",
@@ -525,135 +565,95 @@ for r in results:
                     'take_profit': r['take_profit']
                 }
                 new_notifications.append(notification)
-            elif notify_signal_change:
-                notification = {
-                    'type': 'neutral',
-                    'message': f"⚖️ Signal changed to NEUTRAL for {r['name']}",
-                    'instrument': r['name'],
-                    'price': r['price_str']
-                }
-                new_notifications.append(notification)
-        
-        # Check for confidence increase
-        elif current_signal != 'NEUTRAL' and current_confidence > prev_confidence + 10:
-            notification = {
-                'type': 'buy' if current_signal == 'BUY' else 'sell',
-                'message': f"📈 SIGNAL STRENGTHENED for {r['name']}! Confidence: {prev_confidence}% → {current_confidence}%",
-                'instrument': r['name'],
-                'price': r['price_str']
-            }
-            new_notifications.append(notification)
-    
-    # Store current signal for next comparison
-    st.session_state.previous_signals[symbol_key] = {
-        'action': current_signal,
-        'confidence': current_confidence
-    }
 
 # Add new notifications to session state
 if new_notifications:
     st.session_state.notifications = new_notifications + st.session_state.notifications
-    # Keep only last 20 notifications
     st.session_state.notifications = st.session_state.notifications[:20]
 
 # Display notifications using HTML/JS
 if st.session_state.notifications:
     notification_html = ""
-    for i, notif in enumerate(st.session_state.notifications[:5]):  # Show only last 5
+    for i, notif in enumerate(st.session_state.notifications[:5]):
         if notif['type'] == 'buy':
             notif_class = "buy-notification"
-            sound = "🔔" if sound_alerts else ""
         elif notif['type'] == 'sell':
             notif_class = "sell-notification"
-            sound = "🔔" if sound_alerts else ""
         else:
             notif_class = "neutral-notification"
-            sound = ""
         
         notification_html += f"""
         <div class="notification {notif_class}" id="notif_{i}">
-            {sound} <strong>{notif['message']}</strong><br>
+            <strong>{notif['message']}</strong><br>
             <small>Price: {notif.get('price', 'N/A')}</small>
             <span class="notification-close" onclick="document.getElementById('notif_{i}').remove()">✕</span>
         </div>
         """
     
-    # JavaScript to auto-remove notifications after 10 seconds
     st.markdown(f"""
     <div id="notification-container">
         {notification_html}
     </div>
     <script>
-        // Auto-remove notifications after 10 seconds
         setTimeout(function() {{
             var notifications = document.querySelectorAll('.notification');
             notifications.forEach(function(notif) {{
                 notif.remove();
             }});
         }}, 10000);
-        
-        // Play sound for new signals
-        {"new Audio('https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3').play();" if sound_alerts and new_notifications else ""}
     </script>
     """, unsafe_allow_html=True)
 
 # ============================================
 # DISPLAY TRADE SIGNALS TABLE
 # ============================================
-st.markdown("## 🎯 TRADE SIGNALS")
-st.markdown("### What to Buy / Sell Now")
+st.markdown("## 🎯 STRONG TRADE SIGNALS")
+st.markdown("### What to Buy / Sell Today")
 
 # Filter actionable signals
 actionable_signals = [r for r in results if r['action'] != 'NEUTRAL' and r['confidence'] >= min_confidence_notify]
 
 if actionable_signals:
-    # Create trade signals dataframe
-    trade_df = pd.DataFrame([
-        {
-            'Signal': r['signal'],
-            'Instrument': r['name'],
-            'Type': r['type'],
-            'Price': r['price_str'],
-            'Confidence': f"{r['confidence']}%",
-            'Strength': r['signal_strength'],
-            'RSI': f"{r['rsi']:.1f}",
-            'Entry': r['price_str'],
-            'Stop Loss': f"{r['stop_loss']:.5f}" if r['stop_loss'] else '-',
-            'Take Profit': f"{r['take_profit']:.5f}" if r['take_profit'] else '-',
-            'R:R': f"1:{r['risk_reward']}" if r['risk_reward'] else '-'
-        }
-        for r in actionable_signals
-    ])
+    # Display as cards for better visibility
+    for r in actionable_signals:
+        if r['action'] == 'BUY':
+            card_color = "#1a472a"
+            border_color = "#00ff00"
+            bg_light = "#2a5a3a"
+        else:
+            card_color = "#471a1a"
+            border_color = "#ff4444"
+            bg_light = "#5a2a2a"
+        
+        st.markdown(f"""
+        <div style="background: {card_color}; border-left: 5px solid {border_color}; padding: 15px; border-radius: 10px; margin-bottom: 15px;">
+            <h2>{r['signal']} {r['name']}</h2>
+            <table style="width: 100%;">
+                <tr>
+                    <td><b>💰 Price:</b> {r['price_str']}</td>
+                    <td><b>🎯 Confidence:</b> {r['confidence']}%</td>
+                    <td><b>📊 RSI:</b> {r['rsi']:.1f}</td>
+                </tr>
+                <tr>
+                    <td><b>🛑 Stop Loss:</b> {r['stop_loss']:.5f if r['type'] == 'Forex' else r['stop_loss']:.2f}</td>
+                    <td><b>🎯 Take Profit:</b> {r['take_profit']:.5f if r['type'] == 'Forex' else r['take_profit']:.2f}</td>
+                    <td><b>📈 Risk/Reward:</b> 1:{r['risk_reward']}</td>
+                </tr>
+            </table>
+        </div>
+        """, unsafe_allow_html=True)
     
-    # Display signals table with highlighting
-    st.dataframe(
-        trade_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Signal": st.column_config.TextColumn(width="small"),
-            "Instrument": st.column_config.TextColumn(width="medium"),
-            "Type": st.column_config.TextColumn(width="small"),
-            "Price": st.column_config.TextColumn(width="small"),
-            "Confidence": st.column_config.TextColumn(width="small"),
-            "Strength": st.column_config.TextColumn(width="small"),
-            "RSI": st.column_config.TextColumn(width="small"),
-            "Entry": st.column_config.TextColumn(width="small"),
-            "Stop Loss": st.column_config.TextColumn(width="medium"),
-            "Take Profit": st.column_config.TextColumn(width="medium"),
-            "R:R": st.column_config.TextColumn(width="small"),
-        }
-    )
+    # Show consolidated message preview
+    st.info(f"📱 **Telegram Notification**: A consolidated message with all {len(actionable_signals)} signals has been sent to your Telegram bot.")
+    
 else:
-    st.info(f"⚖️ No trade signals above {min_confidence_notify}% confidence at this time.")
+    st.info(f"⚖️ No strong trade signals above {min_confidence_notify}% confidence at this time.")
 
 # ============================================
 # MARKET OVERVIEW TABLE
 # ============================================
 st.markdown("## 📊 MARKET OVERVIEW")
-st.markdown("### All Instruments Analysis")
 
-# Create overview dataframe
 overview_df = pd.DataFrame([
     {
         'Instrument': r['name'],
@@ -662,155 +662,26 @@ overview_df = pd.DataFrame([
         'Change %': f"{r['price_change']:+.2f}%",
         'Signal': r['signal'],
         'Confidence': f"{r['confidence']}%" if r['confidence'] > 0 else '-',
-        'RSI': f"{r['rsi']:.1f}",
-        'SMA20': f"{r['sma20']:.5f}" if r['type'] == 'Forex' else f"{r['sma20']:.2f}",
-        'SMA50': f"{r['sma50']:.5f}" if r['type'] == 'Forex' else f"{r['sma50']:.2f}",
-        'MACD': f"{r['macd_histogram']:.4f}",
-        'Volatility': f"{r['atr_percent']:.2f}%"
+        'RSI': f"{r['rsi']:.1f}"
     }
     for r in results
 ])
 
-st.dataframe(
-    overview_df,
-    use_container_width=True,
-    hide_index=True
-)
-
-# ============================================
-# DETAILED ANALYSIS
-# ============================================
-st.markdown("## 📈 DETAILED ANALYSIS")
-
-# Create tabs for different instrument types
-tab1, tab2, tab3 = st.tabs(["💰 Forex Pairs", "📊 Indices", "🥇 Commodities"])
-
-# Filter by type
-forex = [r for r in results if r['type'] == 'Forex']
-indices = [r for r in results if r['type'] == 'Index']
-commodities = [r for r in results if r['type'] == 'Commodity']
-
-with tab1:
-    if forex:
-        for r in forex:
-            with st.expander(f"{r['signal']} {r['name']} - {r['signal']}", expanded=False):
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.metric("Current Price", r['price_str'], f"{r['price_change']:+.2f}%")
-                    st.metric("RSI", f"{r['rsi']:.1f}", 
-                             delta="Oversold" if r['rsi'] < 30 else ("Overbought" if r['rsi'] > 70 else "Neutral"))
-                    st.metric("ATR Volatility", f"{r['atr_percent']:.2f}%")
-                
-                with col2:
-                    st.metric("SMA 20", f"{r['sma20']:.5f}")
-                    st.metric("SMA 50", f"{r['sma50']:.5f}")
-                    st.metric("MACD Histogram", f"{r['macd_histogram']:.4f}")
-                
-                with col3:
-                    if r['action'] != 'NEUTRAL':
-                        st.metric("Signal Strength", r['signal_strength'])
-                        st.metric("Confidence", f"{r['confidence']}%")
-                        st.metric("Risk/Reward", f"1:{r['risk_reward']}" if r['risk_reward'] else '-')
-                
-                if r['action'] != 'NEUTRAL':
-                    st.markdown("---")
-                    st.markdown("**🎯 Trade Plan:**")
-                    col_a, col_b, col_c = st.columns(3)
-                    with col_a:
-                        st.info(f"🚀 **Entry:** {r['price_str']}")
-                    with col_b:
-                        st.warning(f"🛑 **Stop Loss:** {r['stop_loss']:.5f}")
-                    with col_c:
-                        st.success(f"🎯 **Take Profit:** {r['take_profit']:.5f}")
-    else:
-        st.info("No forex data available")
-
-with tab2:
-    if indices:
-        for r in indices:
-            with st.expander(f"{r['signal']} {r['name']} - {r['signal']}", expanded=False):
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.metric("Current Price", r['price_str'], f"{r['price_change']:+.2f}%")
-                    st.metric("RSI", f"{r['rsi']:.1f}",
-                             delta="Oversold" if r['rsi'] < 30 else ("Overbought" if r['rsi'] > 70 else "Neutral"))
-                    st.metric("ATR Volatility", f"{r['atr_percent']:.2f}%")
-                
-                with col2:
-                    st.metric("SMA 20", f"{r['sma20']:.2f}")
-                    st.metric("SMA 50", f"{r['sma50']:.2f}")
-                    st.metric("MACD Histogram", f"{r['macd_histogram']:.4f}")
-                
-                with col3:
-                    if r['action'] != 'NEUTRAL':
-                        st.metric("Signal Strength", r['signal_strength'])
-                        st.metric("Confidence", f"{r['confidence']}%")
-                        st.metric("Risk/Reward", f"1:{r['risk_reward']}" if r['risk_reward'] else '-')
-                
-                if r['action'] != 'NEUTRAL':
-                    st.markdown("---")
-                    st.markdown("**🎯 Trade Plan:**")
-                    col_a, col_b, col_c = st.columns(3)
-                    with col_a:
-                        st.info(f"🚀 **Entry:** {r['price_str']}")
-                    with col_b:
-                        st.warning(f"🛑 **Stop Loss:** {r['stop_loss']:.2f}")
-                    with col_c:
-                        st.success(f"🎯 **Take Profit:** {r['take_profit']:.2f}")
-    else:
-        st.info("No index data available")
-
-with tab3:
-    if commodities:
-        for r in commodities:
-            with st.expander(f"{r['signal']} {r['name']} - {r['signal']}", expanded=False):
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.metric("Current Price", r['price_str'], f"{r['price_change']:+.2f}%")
-                    st.metric("RSI", f"{r['rsi']:.1f}",
-                             delta="Oversold" if r['rsi'] < 30 else ("Overbought" if r['rsi'] > 70 else "Neutral"))
-                    st.metric("ATR Volatility", f"{r['atr_percent']:.2f}%")
-                
-                with col2:
-                    st.metric("SMA 20", f"{r['sma20']:.2f}")
-                    st.metric("SMA 50", f"{r['sma50']:.2f}")
-                    st.metric("MACD Histogram", f"{r['macd_histogram']:.4f}")
-                
-                with col3:
-                    if r['action'] != 'NEUTRAL':
-                        st.metric("Signal Strength", r['signal_strength'])
-                        st.metric("Confidence", f"{r['confidence']}%")
-                        st.metric("Risk/Reward", f"1:{r['risk_reward']}" if r['risk_reward'] else '-')
-                
-                if r['action'] != 'NEUTRAL':
-                    st.markdown("---")
-                    st.markdown("**🎯 Trade Plan:**")
-                    col_a, col_b, col_c = st.columns(3)
-                    with col_a:
-                        st.info(f"🚀 **Entry:** {r['price_str']}")
-                    with col_b:
-                        st.warning(f"🛑 **Stop Loss:** {r['stop_loss']:.2f}")
-                    with col_c:
-                        st.success(f"🎯 **Take Profit:** {r['take_profit']:.2f}")
-    else:
-        st.info("No commodity data available")
+st.dataframe(overview_df, use_container_width=True, hide_index=True)
 
 # ============================================
 # SUMMARY STATISTICS
 # ============================================
 st.markdown("## 📊 SUMMARY STATISTICS")
 
-col1, col2, col3, col4, col5, col6 = st.columns(6)
+col1, col2, col3, col4, col5 = st.columns(5)
 
 with col1:
-    buy_signals = len([r for r in results if r['action'] == 'BUY'])
+    buy_signals = len([r for r in results if r['action'] == 'BUY' and r['confidence'] >= min_confidence_notify])
     st.metric("🟢 BUY Signals", buy_signals)
 
 with col2:
-    sell_signals = len([r for r in results if r['action'] == 'SELL'])
+    sell_signals = len([r for r in results if r['action'] == 'SELL' and r['confidence'] >= min_confidence_notify])
     st.metric("🔴 SELL Signals", sell_signals)
 
 with col3:
@@ -822,38 +693,10 @@ with col4:
     st.metric("Avg Confidence", f"{avg_confidence:.0f}%")
 
 with col5:
-    if st.session_state.auto_refresh:
-        st.metric("Auto-Refresh", "ON", delta="60s")
-    else:
-        st.metric("Auto-Refresh", "OFF")
+    st.metric("📱 Next Report", signal_mode.replace("Every ", "").replace("On ", ""))
 
-with col6:
-    gold_signals = len([r for r in results if 'Gold' in r['name'] and r['action'] != 'NEUTRAL'])
-    st.metric("🥇 Gold Signals", gold_signals)
-
-# Recent notifications log
-if st.session_state.notifications:
-    with st.expander("📋 Recent Notifications Log"):
-        for notif in st.session_state.notifications[:10]:
-            st.write(f"• {notif['message']}")
-
-# Telegram Bots Status
-with st.expander("🤖 Telegram Bots Status"):
-    st.markdown("**📱 Main Bot (All Instruments)**")
-    st.write(f"Token: {MAIN_BOT_TOKEN[:20]}...")
-    st.write(f"Chat ID: {MAIN_BOT_CHAT_ID}")
-    st.write(f"Signals Sent: {len(st.session_state.main_bot_sent)}")
-    
-    st.markdown("---")
-    st.markdown("**🥇 Gold-Only Bot**")
-    st.write(f"Token: {GOLD_BOT_TOKEN[:20]}...")
-    st.write(f"Chat ID: {GOLD_BOT_CHAT_ID}")
-    st.write(f"Gold Signals Sent: {len(st.session_state.gold_bot_sent)}")
-    
-    st.markdown("---")
-    st.markdown("**Last 5 Gold Signals Sent:**")
-    for sig in list(st.session_state.gold_bot_sent)[-5:]:
-        st.write(f"• {sig}")
+# Signal mode info
+st.info(f"📱 **Signal Mode:** {signal_mode} - You will receive ONE consolidated message with all strong signals")
 
 # ============================================
 # AUTO-REFRESH LOGIC
@@ -872,8 +715,7 @@ st.markdown("""
 <div style='text-align: center; color: gray;'>
     <p>⚠️ <b>Educational purposes only</b> - Not financial advice</p>
     <p>📊 Signals based on: RSI, MACD, Moving Averages, and Volatility (ATR)</p>
-    <p>🤖 <b>Two Telegram Bots:</b> Main Bot (All Instruments) + Gold-Only Bot</p>
-    <p>📱 Telegram notifications sent to your phone when signals appear</p>
+    <p>📱 <b>One consolidated Telegram message</b> sent daily with all strong signals</p>
     <p>🔄 Enable auto-refresh in sidebar for live updates</p>
 </div>
 """, unsafe_allow_html=True)
